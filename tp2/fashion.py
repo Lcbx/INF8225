@@ -1,4 +1,14 @@
+import torch
+from torch import nn, optim
+import torch.nn.functional as F
+from torchvision import transforms
+from torch.autograd import Variable
+
 from torchvision.datasets.mnist import MNIST
+
+# to install pytorch in temp with no admin right
+# pip install --install-option="--prefix=/tmp/" --user http://download.pytorch.org/whl/cu80/torch-0.3.1-cp27-cp27mu-linux_x86_64.whl
+# pip install --install-option="--prefix=/tmp/" torchvision
 
 
 class FashionMNIST(MNIST):
@@ -23,3 +33,6 @@ class FashionMNIST(MNIST):
             'http://fashion-mnist.s3-website.eu-central-1.amazonaws.com/t10k-labels-idx1-ubyte.gz',
             ]
 
+
+train_data = FashionMNIST("./data", train=True, download=True, transform=transforms.Compose([ transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,)) ]))
+train_data = FashionMNIST("./data", train=True, download=True, transform=transforms.Compose([ transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,)) ]))
