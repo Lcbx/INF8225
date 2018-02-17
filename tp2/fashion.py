@@ -1,11 +1,13 @@
-import numpy as np
-import time
-
 import torch
 from torch import nn, optim
 import torch.nn.functional as F
 from torchvision import transforms
 from torch.autograd import Variable
+
+import sys
+import numpy as np
+import matplotlib.pyplot as plt
+from torch.utils.data.sampler import SubsetRandomSampler
 
 from torchvision.datasets.mnist import MNIST
 
@@ -37,77 +39,111 @@ class FashionMNIST(MNIST):
 			]
 
 
+# loading based on https://gist.github.com/kevinzakka/d33bf8d6c7f06a9d8c76d97a7879f5cb
 
-train_data = FashionMNIST("./data", train=True, download=True, transform=transforms.Compose([ transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,)) ]))
-valid_data = FashionMNIST("./data", train=False, download=True, transform=transforms.Compose([ transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,)) ]))
+train_and_valid_data = FashionMNIST("./data", train=True, download=True, transform=transforms.Compose([ transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,)) ]))
+test_data = FashionMNIST("./data", train=False, download=True, transform=transforms.Compose([ transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,)) ]))
 
+batch_size = 256
+split = 10000
 
+num_train = len(train_and_valid_data)
+indices = list(range(num_train))
 
-class layer(object):
-	def __init__(self, nIn, nOut): # Notre methode constructeur		
-		self.w = np.random.random_integers(-3,3, (nIn,nOut))
-		self.b = np.random.random_integers(-3,3, (1,nOut))
-	def fprop(self, x):
-		z = np.dot(x, self.w) + self.b
-		return z
-	def update(self, lr, x, dEdy):
-		dEdw = np.dot(x.T, dEdy)
-		dEdb = np.mean(dEdy, axis = 0)		
-		self.w = self.w - dEdw * lr
-		self.b = self.b - dEdb * lr
-		dEdx = np.dot(dEdy,self.w.T)
-		return dEdx
+np.random.seed(50676)
+np.random.shuffle(indices)
 
+train_idx, valid_idx = indices[split:], indices[:split]
+train_sampler = SubsetRandomSampler(train_idx)
+valid_sampler = SubsetRandomSampler(valid_idx)
 
-class MLP(object):
-	def __init__(self, list):
-		self.L = layer(list[0],list[1])
-		self.M = layer(list[1],list[2])
-	def fprop(self, x):
-		print np.shape(x.shape)
-		self.cache = self.L.fprop(x)
-		return self.M.fprop(self.cache)
-	def update(self, lr, x, t):
-		dEdy = 2*(self.fprop(x) - np.eye(10)[t])
-		self.L.update(lr, x, self.M.update(lr, self.cache, dEdy))
-		return
-	def error(self, x, t):
-		z = np.argmax(self.fprop(x), axis = 1)
-		errors = np.sum(z!=t)
-		return errors
+train_loader = torch.utils.data.DataLoader( train_and_valid_data, batch_size=batch_size, sampler=train_sampler)
+valid_loader = torch.utils.data.DataLoader( train_and_valid_data, batch_size=batch_size, sampler=valid_sampler)
+test_loader = torch.utils.data.DataLoader(test_data, batch_size=batch_size, shuffle=True)
 
 
+class MLP(nn.Module):
+	def __init__(self, dimensions):
+		super(MLP, self).__init__()
+		self.layers =  nn.ModuleList()
+		self.length = len(dimensions)-1
+		for i in xrange(self.length):
+			self.layers.append( nn.Linear(dimensions[i], dimensions[i+1]) )
+		self.optimizer = optim.SGD(self.parameters(), lr=learning_rate)
 		
-RdN = MLP([ 784, 100, 10 ])
-batch = 1000 # nbr dexemples appris a la fois
-epochs = 10
+	def forward(self, image):
+		batch_size = image.size()[0]
+		x = image.view(batch_size, -1)
+		for i in xrange(self.length-1):
+			x = F.sigmoid(self.layers[i](x))
+		x = F.log_softmax(self.layers[self.length-1](x), dim=0)
+		return x
 
-# mesuring time
-start = time.time()
-for i in range(epochs):
+
+
+def train(model):
+	model.train()
+	for batch_idx, (data, target) in enumerate(train_loader):
+		data, target = Variable(data.cuda(),), Variable(target.cuda(),)
+		model.optimizer.zero_grad()
+		output = model(data)
+		loss = F.nll_loss(output, target)
+		loss.backward()
+		model.optimizer.step()
+
+
+def test(model, loader, name):
+	model.eval()
+	test_loss = 0
+	correct = 0
+	for data, target in loader:
+		data, target = Variable(data.cuda(), volatile=True), Variable(target.cuda(),)
+		output = model(data)
+		test_loss += F.nll_loss(output, target, size_average=False).data[0] # sum u
+		pred = output.data.max(1, keepdim=True)[1] # get the index of the max l
+		correct += pred.eq(target.data.view_as(pred)).cpu().sum()
+	test_loss /= 10000
+	print  name , "set : Average loss:", test_loss, " Accuracy:", correct, "/", 10000, "=", 100. * correct / 10000, "%"
+	return test_loss, 100. * correct / 10000
+
+
+learning_rate = 0.05
+architectures = [ [28*28, 10],
+                [28*28, 64, 10], [28*28, 512, 10], [28*28, 1024, 10],
+  							[28*28, 64, 64, 10], [28*28, 512, 64, 10], [28*28, 512, 512, 10], [28*28, 1024, 512, 10],
+  							[28*28, 64, 512, 10], [28*28, 512, 1024, 10], ]
+
+# redirect print to log file : https://stackoverflow.com/questions/2513479/redirect-prints-to-log-file
+old_stdout = sys.stdout
+log_file = open("experiences.log","w")
+sys.stdout = log_file
+
+
+
+for arc in architectures:
+	epochs = 350
+	print(arc)
 	
-	# training
-	for j in range(len(train_data)/batch):
-		RdN.update(.00001, np.array(train_data.train_data[j*batch:(j+1)*batch].numpy().reshape(784,1000).T), np.array(train_data.train_labels[j*batch:(j+1)*batch]))
+	RdN = MLP(arc)
+	RdN.cuda()
 	
-	# mesuring error rate
-	error_count = 0
-	for j in range(len(valid_data)/batch):
-		error_count += RdN.error(valid_data.test_data[j*batch:(j+1)*batch], valid_data.test_labels[j*batch:(j+1)*batch])
-	error_rate = error_count / len(train_data)
+	losses =[]
 	
-	# report
-	print "validation error rate : " + str(error_rate) + " epoch " + str(i) 
-print " execution time : " + str(time.time() - start)
+	for epoch in range(1, epochs + 1):
+		train(RdN)
+		loss, accuracy = test(RdN, valid_loader, 'valid')
+		losses.append(loss)
+	loss, accuracy = test(RdN, test_loader, 'test')
+	
+	plt.title("Architecture : " + str(arc) + "  & Learning rate : " + str(learning_rate) + " (accuracy : " + str(accuracy)[:4] + ") ")
+	plt.ylabel("Average negative log likelihood")
+	plt.xlabel("Epoch")
+	plt.plot(losses, label="validation")
+	plt.legend()
+	plt.savefig(str(arc) + ".png") #plt.show()
+	plt.close()
 
-
-
-
-
-
-
-
-
+log_file.close()
 
 
 
